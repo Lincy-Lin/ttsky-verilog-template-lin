@@ -111,9 +111,7 @@ module tt_um_sobel #(
             linebuf2[2] <= 0; linebuf2[3] <= 0;
             linebuf2[4] <= 0; linebuf2[5] <= 0;
             linebuf2[6] <= 0; linebuf2[7] <= 0;
-
         end else if (pixel_valid) begin
-
             if (valid_window)
                 out <= edge_quantized;
             else
@@ -123,8 +121,7 @@ module tt_um_sobel #(
             linebuf1[col] <= pixel_in;
 
             if (col == IMG_SIZE-1) begin
-                col <= 0;
-
+                col  <= 0;
                 r0_0 <= 0;
                 r0_1 <= 0;
                 r1_0 <= 0;
@@ -136,7 +133,6 @@ module tt_um_sobel #(
                     row <= 0;
                 else
                     row <= row + 1'b1;
-
             end else begin
                 col <= col + 1'b1;
 
