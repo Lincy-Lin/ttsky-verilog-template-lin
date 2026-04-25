@@ -5,7 +5,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
-# ── Parameters (must match Verilog) ──────────────────────────────────────────
+# ── Parameters ────────────────────────────────────────────────────────────────
 IMG_SIZE     = 6
 OUTPUT_BITS  = 8
 OUTPUT_SHIFT = 8 - OUTPUT_BITS   # = 0
@@ -97,17 +97,24 @@ async def run_frame(dut, image):
     """
     Send a full frame and collect registered outputs.
 
-    RTL timing: `out` is updated ON the rising edge that sees pixel_valid=1.
-    cocotb reads signals after the rising edge (post-delta), so uo_out already
-    holds the new value immediately after `await RisingEdge`.
+    RTL timing: out is a registered output (non-blocking assignment).
+    The value written on clock edge N is only readable AFTER edge N settles.
+    In cocotb this means: drive pixel N before edge N+1, then read out
+    (which now holds pixel N-1 result). Collect with 1-cycle offset and
+    flush one extra cycle at the end.
     """
     results = []
-    for pix in image:
+    for i, pix in enumerate(image):
         dut.uio_in.value = int(pix) & 0xFF
-        dut.ui_in.value  = 0x01           # pixel_valid = 1
-        await RisingEdge(dut.clk)         # RTL latches pixel, updates out
-        results.append(int(dut.uo_out.value))
-    dut.ui_in.value = 0x00
+        dut.ui_in.value  = 0x01
+        await RisingEdge(dut.clk)
+        if i > 0:
+            results.append(int(dut.uo_out.value))  # result for pixel i-1
+    # flush: one more edge to read the last pixel output
+    dut.ui_in.value  = 0x00
+    dut.uio_in.value = 0x00
+    await RisingEdge(dut.clk)
+    results.append(int(dut.uo_out.value))
     return results
 
 
