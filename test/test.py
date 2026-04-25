@@ -11,7 +11,7 @@ OUTPUT_SHIFT = 8 - OUTPUT_BITS
 
 
 # ─────────────────────────────────────────────────────────────
-# Cycle-accurate RTL model (FIXED)
+# Cycle-accurate RTL model
 # ─────────────────────────────────────────────────────────────
 def sobel_model(image, img_size=IMG_SIZE, output_bits=OUTPUT_BITS):
 
