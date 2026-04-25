@@ -5,40 +5,33 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
-# ── Parameters ────────────────────────────────────────────────────────────────
 IMG_SIZE     = 6
 OUTPUT_BITS  = 8
-OUTPUT_SHIFT = 8 - OUTPUT_BITS   # = 0
+OUTPUT_SHIFT = 8 - OUTPUT_BITS
 
-# ── Software model ────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────
+# Cycle-accurate RTL model (FIXED)
+# ─────────────────────────────────────────────────────────────
 def sobel_model(image, img_size=IMG_SIZE, output_bits=OUTPUT_BITS):
-    """
-    Cycle-accurate Python model of the RTL.
 
-    Key insight: In the RTL always block, valid_window / edge_quantized are
-    evaluated using the CURRENT (pre-update) values of row and col, because
-    non-blocking assignments update row/col only at the END of the time step.
-    This model reproduces that behaviour exactly.
-
-    image: flat list of img_size*img_size uint8 values, row-major.
-    Returns: list of img_size*img_size output values in the same order.
-    """
     output_shift = 8 - output_bits
 
     linebuf1 = [0] * img_size
     linebuf2 = [0] * img_size
+
     r0_0 = r0_1 = 0
     r1_0 = r1_1 = 0
     r2_0 = r2_1 = 0
+
     row = 0
     col = 0
 
     results = []
 
-    for idx in range(img_size * img_size):
-        pixel_in = image[idx]
+    for pixel_in in image:
 
-        # --- Combinational (evaluated with current row/col) ---
+        # ── combinational reads (BEFORE update) ──
         row1_col2 = linebuf1[col]
         row2_col2 = linebuf2[col]
 
@@ -53,36 +46,47 @@ def sobel_model(image, img_size=IMG_SIZE, output_bits=OUTPUT_BITS):
         gx = s12(-p00 + p02 - 2*p10 + 2*p12 - p20 + p22)
         gy = s12( p00 + 2*p01 + p02 - p20 - 2*p21 - p22)
 
-        abs_gx = abs(gx) & 0xFFF
-        abs_gy = abs(gy) & 0xFFF
-        mag     = (abs_gx + abs_gy) & 0x1FFF
-        mag_sat8 = 0xFF if mag > 255 else mag
-        edge    = (mag_sat8 >> output_shift) & 0xFF
+        abs_gx = abs(gx)
+        abs_gy = abs(gy)
 
-        # valid_window uses pre-update row/col (non-blocking assignment semantics)
+        mag = abs_gx + abs_gy
+        mag_sat8 = 0xFF if mag > 255 else mag
+        edge = (mag_sat8 >> output_shift) & 0xFF
+
         valid_window = (row >= 2) and (col >= 2)
         results.append(edge if valid_window else 0)
 
-        # --- Sequential update (mirrors non-blocking assignments) ---
+        # ── sequential update (EXACT RTL match) ──
         linebuf2[col] = row1_col2
         linebuf1[col] = pixel_in
 
         if col == img_size - 1:
             col = 0
+
+            # reset shift registers at row end (matches RTL!)
             r0_0 = r0_1 = 0
             r1_0 = r1_1 = 0
             r2_0 = r2_1 = 0
-            row = 0 if row == img_size - 1 else row + 1
+
+            if row == img_size - 1:
+                row = 0
+            else:
+                row += 1
+
         else:
             col += 1
-            r2_0, r2_1 = r2_1, pixel_in
+
+            # EXACT RTL shift behavior
+            r0_0, r0_1 = r0_1, pixel_in
             r1_0, r1_1 = r1_1, row1_col2
-            r0_0, r0_1 = r0_1, row2_col2
+            r2_0, r2_1 = r2_1, row2_col2
 
     return results
 
 
-# ── DUT helpers ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# DUT helpers
+# ─────────────────────────────────────────────────────────────
 async def reset_dut(dut):
     dut.ena.value    = 1
     dut.ui_in.value  = 0
@@ -94,197 +98,116 @@ async def reset_dut(dut):
 
 
 async def run_frame(dut, image):
-    """
-    Send a full frame and collect registered outputs.
-
-    RTL timing: out is a registered output (non-blocking assignment).
-    The value written on clock edge N is only readable AFTER edge N settles.
-    In cocotb this means: drive pixel N before edge N+1, then read out
-    (which now holds pixel N-1 result). Collect with 1-cycle offset and
-    flush one extra cycle at the end.
-    """
     results = []
-    # Timing: cocotb reads uo_out BEFORE the non-blocking assignment of `out`
-    # has settled in the simulator. Therefore the value seen after edge N is
-    # the value that was set on edge N-1 (one cycle old).
-    # We compensate by reading with a 1-cycle offset:
-    #   - Skip the read after the first edge (out still holds pre-frame value).
-    #   - After the last real pixel, send one dummy pixel (valid=1) to clock
-    #     the final result into `out`, then read it.
-    all_pixels = list(image) + [0x00]   # dummy flush pixel
+
+    all_pixels = list(image) + [0x00]
+
     for i, pix in enumerate(all_pixels):
         dut.uio_in.value = int(pix) & 0xFF
         dut.ui_in.value  = 0x01
+
         await RisingEdge(dut.clk)
+
         if i > 0:
-            results.append(int(dut.uo_out.value))   # result for pixel i-1
+            results.append(int(dut.uo_out.value))
+
     dut.ui_in.value  = 0x00
     dut.uio_in.value = 0x00
-    return results   # len == len(image)
+
+    return results
 
 
 async def check_frame(dut, image, label):
     expected = sobel_model(image)
     got      = await run_frame(dut, image)
-    passed   = True
+
+    passed = True
+
     for idx, (exp, g) in enumerate(zip(expected, got)):
         row, col = divmod(idx, IMG_SIZE)
+
         if exp != g:
             dut._log.error(
                 f"[{label}] FAIL ({row},{col}) pix={image[idx]:#04x} "
                 f"expected={exp} got={g}"
             )
             passed = False
-        else:
-            dut._log.debug(
-                f"[{label}] OK   ({row},{col}) pix={image[idx]:#04x} out={g}"
-            )
+
     return passed
 
 
-# ── Test 1: all-zero image ────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Tests
+# ─────────────────────────────────────────────────────────────
 @cocotb.test()
 async def test_all_zeros(dut):
-    """Flat black image → Sobel gradient everywhere = 0."""
-    dut._log.info("test_all_zeros")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
-    ok = await check_frame(dut, [0] * (IMG_SIZE * IMG_SIZE), "all_zeros")
-    assert ok, "test_all_zeros FAILED"
-    dut._log.info("test_all_zeros PASSED")
+    assert await check_frame(dut, [0] * (IMG_SIZE * IMG_SIZE), "zeros")
 
 
-# ── Test 2: all-255 image ─────────────────────────────────────────────────────
 @cocotb.test()
 async def test_all_ones(dut):
-    """Flat white image → gradient = 0."""
-    dut._log.info("test_all_ones")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
-    ok = await check_frame(dut, [255] * (IMG_SIZE * IMG_SIZE), "all_ones")
-    assert ok, "test_all_ones FAILED"
-    dut._log.info("test_all_ones PASSED")
+    assert await check_frame(dut, [255] * (IMG_SIZE * IMG_SIZE), "ones")
 
 
-# ── Test 3: vertical edge ─────────────────────────────────────────────────────
 @cocotb.test()
 async def test_vertical_edge(dut):
-    """Left half=0, right half=255 → strong Gx."""
-    dut._log.info("test_vertical_edge")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
-    half  = IMG_SIZE // 2
+
+    half = IMG_SIZE // 2
     image = [0 if c < half else 255
-             for r in range(IMG_SIZE) for c in range(IMG_SIZE)]
-    ok = await check_frame(dut, image, "vertical_edge")
-    assert ok, "test_vertical_edge FAILED"
-    dut._log.info("test_vertical_edge PASSED")
+             for r in range(IMG_SIZE)
+             for c in range(IMG_SIZE)]
+
+    assert await check_frame(dut, image, "vertical")
 
 
-# ── Test 4: horizontal edge ───────────────────────────────────────────────────
 @cocotb.test()
 async def test_horizontal_edge(dut):
-    """Top half=0, bottom half=255 → strong Gy."""
-    dut._log.info("test_horizontal_edge")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
-    half  = IMG_SIZE // 2
+
+    half = IMG_SIZE // 2
     image = [0 if r < half else 255
-             for r in range(IMG_SIZE) for c in range(IMG_SIZE)]
-    ok = await check_frame(dut, image, "horizontal_edge")
-    assert ok, "test_horizontal_edge FAILED"
-    dut._log.info("test_horizontal_edge PASSED")
+             for r in range(IMG_SIZE)
+             for c in range(IMG_SIZE)]
+
+    assert await check_frame(dut, image, "horizontal")
 
 
-# ── Test 5: checkerboard ──────────────────────────────────────────────────────
 @cocotb.test()
 async def test_checkerboard(dut):
-    """Checkerboard → high gradient in valid window."""
-    dut._log.info("test_checkerboard")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
-    image = [255 if (r + c) % 2 == 0 else 0
-             for r in range(IMG_SIZE) for c in range(IMG_SIZE)]
-    ok = await check_frame(dut, image, "checkerboard")
-    assert ok, "test_checkerboard FAILED"
-    dut._log.info("test_checkerboard PASSED")
+
+    image = [(255 if (r + c) % 2 == 0 else 0)
+             for r in range(IMG_SIZE)
+             for c in range(IMG_SIZE)]
+
+    assert await check_frame(dut, image, "checker")
 
 
-# ── Test 6: two consecutive frames ───────────────────────────────────────────
 @cocotb.test()
 async def test_two_frames(dut):
-    """
-    Two full frames back-to-back without reset between them.
-
-    The RTL row/col wrap automatically at the end of each frame, but the
-    linebuf and shift registers are NOT cleared — they carry the last row of
-    frame N into the top of frame N+1.  The software model must therefore run
-    over the concatenated pixel stream in a single call so its internal state
-    mirrors the hardware exactly.
-    """
-    dut._log.info("test_two_frames")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
 
     import random
     random.seed(42)
 
-    frame_size = IMG_SIZE * IMG_SIZE
-    frame0 = [random.randint(0, 255) for _ in range(frame_size)]
-    frame1 = [random.randint(0, 255) for _ in range(frame_size)]
+    N = IMG_SIZE * IMG_SIZE
 
-    # Run software model over the full 2-frame stream at once so state carries over
-    both_expected = sobel_model(frame0 + frame1, img_size=IMG_SIZE, output_bits=OUTPUT_BITS)
-    exp0 = both_expected[:frame_size]
-    exp1 = both_expected[frame_size:]
+    frame0 = [random.randint(0, 255) for _ in range(N)]
+    frame1 = [random.randint(0, 255) for _ in range(N)]
 
-    async def run_and_check(image, expected, label):
-        got = await run_frame(dut, image)
-        passed = True
-        for idx, (exp, g) in enumerate(zip(expected, got)):
-            row, col = divmod(idx, IMG_SIZE)
-            if exp != g:
-                dut._log.error(
-                    f"[{label}] FAIL ({row},{col}) pix={image[idx]:#04x} "
-                    f"expected={exp} got={g}"
-                )
-                passed = False
-            else:
-                dut._log.debug(f"[{label}] OK ({row},{col}) out={g}")
-        return passed
+    combined = frame0 + frame1
 
-    # Send both frames as one continuous stream with 1-cycle read offset.
-    # frame1[0] acts as the flush pixel for frame0's last output,
-    # so no extra dummy pixel is needed and the RTL state is unaffected.
-    dut._log.info("  Sending both frames as one stream")
-    combined_image = frame0 + frame1
-    combined_exp   = both_expected
+    expected = sobel_model(combined)
 
-    got_all = []
-    all_pixels = combined_image + [0x00]   # one dummy at the very end
-    for i, pix in enumerate(all_pixels):
-        dut.uio_in.value = int(pix) & 0xFF
-        dut.ui_in.value  = 0x01
-        await RisingEdge(dut.clk)
-        if i > 0:
-            got_all.append(int(dut.uo_out.value))
-    dut.ui_in.value  = 0x00
-    dut.uio_in.value = 0x00
+    got = await run_frame(dut, combined)
 
-    all_ok = True
-    for idx, (exp, g) in enumerate(zip(combined_exp, got_all)):
-        frame_num = idx // frame_size
-        local_idx = idx % frame_size
-        row, col  = divmod(local_idx, IMG_SIZE)
-        pix = combined_image[idx]
-        if exp != g:
-            dut._log.error(
-                f"[frame{frame_num}] FAIL ({row},{col}) pix={pix:#04x} "
-                f"expected={exp} got={g}"
-            )
-            all_ok = False
-        else:
-            dut._log.debug(f"[frame{frame_num}] OK ({row},{col}) out={g}")
-
-    assert all_ok, "test_two_frames FAILED"
-    dut._log.info("test_two_frames PASSED")
+    assert expected == got, "test_two_frames FAILED"
