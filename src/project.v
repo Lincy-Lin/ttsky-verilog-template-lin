@@ -1,8 +1,8 @@
 `default_nettype none
 
 module tt_um_sobel #(
-    parameter IMG_SIZE    = 8,
-    parameter OUTPUT_BITS = 1
+    parameter IMG_SIZE    = 6,
+    parameter OUTPUT_BITS = 6
 )(
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
@@ -102,16 +102,13 @@ module tt_um_sobel #(
             r2_0 <= 0;
             r2_1 <= 0;
 
-            linebuf1[0] <= 0; linebuf1[1] <= 0;
-            linebuf1[2] <= 0; linebuf1[3] <= 0;
-            linebuf1[4] <= 0; linebuf1[5] <= 0;
-            linebuf1[6] <= 0; linebuf1[7] <= 0;
+            for (i = 0; i < IMG_SIZE; i = i + 1) begin
+                linebuf1[i] <= 0;
+                linebuf2[i] <= 0;
+            end
 
-            linebuf2[0] <= 0; linebuf2[1] <= 0;
-            linebuf2[2] <= 0; linebuf2[3] <= 0;
-            linebuf2[4] <= 0; linebuf2[5] <= 0;
-            linebuf2[6] <= 0; linebuf2[7] <= 0;
         end else if (pixel_valid) begin
+
             if (valid_window)
                 out <= edge_quantized;
             else
@@ -121,7 +118,8 @@ module tt_um_sobel #(
             linebuf1[col] <= pixel_in;
 
             if (col == IMG_SIZE-1) begin
-                col  <= 0;
+                col <= 0;
+
                 r0_0 <= 0;
                 r0_1 <= 0;
                 r1_0 <= 0;
@@ -133,6 +131,7 @@ module tt_um_sobel #(
                     row <= 0;
                 else
                     row <= row + 1'b1;
+
             end else begin
                 col <= col + 1'b1;
 
