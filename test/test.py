@@ -6,8 +6,8 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
 # ── Parameters (must match Verilog) ──────────────────────────────────────────
-IMG_SIZE    = 6
-OUTPUT_BITS = 8
+IMG_SIZE     = 6
+OUTPUT_BITS  = 8
 OUTPUT_SHIFT = 8 - OUTPUT_BITS   # = 0
 
 # ── Software model ────────────────────────────────────────────────────────────
