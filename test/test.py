@@ -104,18 +104,23 @@ async def run_frame(dut, image):
     flush one extra cycle at the end.
     """
     results = []
-    for i, pix in enumerate(image):
+    # Timing: cocotb reads uo_out BEFORE the non-blocking assignment of `out`
+    # has settled in the simulator. Therefore the value seen after edge N is
+    # the value that was set on edge N-1 (one cycle old).
+    # We compensate by reading with a 1-cycle offset:
+    #   - Skip the read after the first edge (out still holds pre-frame value).
+    #   - After the last real pixel, send one dummy pixel (valid=1) to clock
+    #     the final result into `out`, then read it.
+    all_pixels = list(image) + [0x00]   # dummy flush pixel
+    for i, pix in enumerate(all_pixels):
         dut.uio_in.value = int(pix) & 0xFF
         dut.ui_in.value  = 0x01
         await RisingEdge(dut.clk)
         if i > 0:
-            results.append(int(dut.uo_out.value))  # result for pixel i-1
-    # flush: one more edge to read the last pixel output
+            results.append(int(dut.uo_out.value))   # result for pixel i-1
     dut.ui_in.value  = 0x00
     dut.uio_in.value = 0x00
-    await RisingEdge(dut.clk)
-    results.append(int(dut.uo_out.value))
-    return results
+    return results   # len == len(image)
 
 
 async def check_frame(dut, image, label):
@@ -208,7 +213,15 @@ async def test_checkerboard(dut):
 # ── Test 6: two consecutive frames ───────────────────────────────────────────
 @cocotb.test()
 async def test_two_frames(dut):
-    """Two full frames back-to-back; RTL auto-wraps row/col."""
+    """
+    Two full frames back-to-back without reset between them.
+
+    The RTL row/col wrap automatically at the end of each frame, but the
+    linebuf and shift registers are NOT cleared — they carry the last row of
+    frame N into the top of frame N+1.  The software model must therefore run
+    over the concatenated pixel stream in a single call so its internal state
+    mirrors the hardware exactly.
+    """
     dut._log.info("test_two_frames")
     cocotb.start_soon(Clock(dut.clk, 10, unit="us").start())
     await reset_dut(dut)
@@ -216,12 +229,62 @@ async def test_two_frames(dut):
     import random
     random.seed(42)
 
+    frame_size = IMG_SIZE * IMG_SIZE
+    frame0 = [random.randint(0, 255) for _ in range(frame_size)]
+    frame1 = [random.randint(0, 255) for _ in range(frame_size)]
+
+    # Run software model over the full 2-frame stream at once so state carries over
+    both_expected = sobel_model(frame0 + frame1, img_size=IMG_SIZE, output_bits=OUTPUT_BITS)
+    exp0 = both_expected[:frame_size]
+    exp1 = both_expected[frame_size:]
+
+    async def run_and_check(image, expected, label):
+        got = await run_frame(dut, image)
+        passed = True
+        for idx, (exp, g) in enumerate(zip(expected, got)):
+            row, col = divmod(idx, IMG_SIZE)
+            if exp != g:
+                dut._log.error(
+                    f"[{label}] FAIL ({row},{col}) pix={image[idx]:#04x} "
+                    f"expected={exp} got={g}"
+                )
+                passed = False
+            else:
+                dut._log.debug(f"[{label}] OK ({row},{col}) out={g}")
+        return passed
+
+    # Send both frames as one continuous stream with 1-cycle read offset.
+    # frame1[0] acts as the flush pixel for frame0's last output,
+    # so no extra dummy pixel is needed and the RTL state is unaffected.
+    dut._log.info("  Sending both frames as one stream")
+    combined_image = frame0 + frame1
+    combined_exp   = both_expected
+
+    got_all = []
+    all_pixels = combined_image + [0x00]   # one dummy at the very end
+    for i, pix in enumerate(all_pixels):
+        dut.uio_in.value = int(pix) & 0xFF
+        dut.ui_in.value  = 0x01
+        await RisingEdge(dut.clk)
+        if i > 0:
+            got_all.append(int(dut.uo_out.value))
+    dut.ui_in.value  = 0x00
+    dut.uio_in.value = 0x00
+
     all_ok = True
-    for frame in range(2):
-        image = [random.randint(0, 255) for _ in range(IMG_SIZE * IMG_SIZE)]
-        dut._log.info(f"  Frame {frame}")
-        ok = await check_frame(dut, image, f"frame{frame}")
-        all_ok = all_ok and ok
+    for idx, (exp, g) in enumerate(zip(combined_exp, got_all)):
+        frame_num = idx // frame_size
+        local_idx = idx % frame_size
+        row, col  = divmod(local_idx, IMG_SIZE)
+        pix = combined_image[idx]
+        if exp != g:
+            dut._log.error(
+                f"[frame{frame_num}] FAIL ({row},{col}) pix={pix:#04x} "
+                f"expected={exp} got={g}"
+            )
+            all_ok = False
+        else:
+            dut._log.debug(f"[frame{frame_num}] OK ({row},{col}) out={g}")
 
     assert all_ok, "test_two_frames FAILED"
     dut._log.info("test_two_frames PASSED")
