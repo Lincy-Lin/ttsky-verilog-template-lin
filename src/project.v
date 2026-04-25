@@ -30,7 +30,7 @@ module tt_um_sobel #(
     assign uio_out = 8'b0;
     assign uio_oe  = 8'b0;
 
-    wire _unused = &{ena, ui_in[7:1], 1'b0};
+    wire _unused = &{ena, ui_in[7:1], p11, 1'b0};
 
     wire       pixel_valid = ui_in[0];
     wire [7:0] pixel_in    = uio_in;
