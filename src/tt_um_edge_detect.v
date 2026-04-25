@@ -1,47 +1,51 @@
 `timescale 1ns/1ps
-
 module tt_um_edge_detect #(
     parameter IMG_WIDTH       = 8,
     parameter IMG_HEIGHT      = 8,
-    parameter FIFO_DEPTH      = 64,
-    parameter FIFO_ADDR_WIDTH = 8
+    parameter FIFO_DEPTH      = 16,
+    parameter FIFO_ADDR_WIDTH = 4
 )(
-    input  wire       VGND,
-    input  wire       VDPWR,
-
-    input  wire       clk,
-    input  wire       rst_n,
-
-    input  wire       in_wr_en,
-    input  wire [7:0] in_pixel,
-    output wire       in_full,
-
-    input  wire       out_rd_en,
-    output wire [7:0] out_pixel,
-    output wire       out_empty,
-
-    output wire       frame_done
+    input  wire [7:0] ui_in,    // Dedicated inputs
+    output wire [7:0] uo_out,   // Dedicated outputs
+    input  wire [7:0] uio_in,   // IOs: Input path
+    output wire [7:0] uio_out,  // IOs: Output path
+    output wire [7:0] uio_oe,   // IOs: Enable path
+    input  wire       ena,      // always 1 when the design is powered
+    input  wire       clk,      // clock
+    input  wire       rst_n     // reset_n - low to reset
 );
+    // Map TT ports to internal signals
+    wire       in_wr_en  = ui_in[0];
+    wire       out_rd_en = ui_in[1];
+    wire [7:0] in_pixel  = uio_in;
+
+    wire       in_full;
+    wire [7:0] out_pixel;
+    wire       out_empty;
+    wire       frame_done;
+
+    assign uo_out[0]   = in_full;
+    assign uo_out[1]   = out_empty;
+    assign uo_out[2]   = frame_done;
+    assign uo_out[7:3] = 5'b0;
+    assign uio_out     = out_pixel;
+    assign uio_oe      = 8'hFF;
 
     wire [7:0] input_fifo_dout;
     wire       input_fifo_empty;
     wire       input_fifo_rd_en;
     wire [FIFO_ADDR_WIDTH:0] input_fifo_count;
-
     reg        input_fifo_valid_d;
-
     wire [7:0] sobel_edge;
     wire       sobel_valid;
-
     wire       output_fifo_full;
     wire [FIFO_ADDR_WIDTH:0] output_fifo_count;
 
-    wire _unused = &{VGND, VDPWR};
+    // suppress unused warnings
+    wire _unused = &{ena, uio_in, input_fifo_count, output_fifo_count};
 
-    // Read input FIFO when it has data and output FIFO can accept Sobel output.
     assign input_fifo_rd_en = (!input_fifo_empty) && (!output_fifo_full);
 
-    // fifo_sync is synchronous-read, so data is valid one clock after rd_en.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             input_fifo_valid_d <= 1'b0;
