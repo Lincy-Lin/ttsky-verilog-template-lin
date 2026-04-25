@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 module tt_um_edge_detect #(
     parameter IMG_WIDTH  = 8,
     parameter IMG_HEIGHT = 8
