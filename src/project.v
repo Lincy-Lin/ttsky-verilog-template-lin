@@ -11,8 +11,8 @@ module tt_um_edge_detect (
     input  wire       rst_n
 );
 
-    assign uio_out = 0;
-    assign uio_oe  = 0;
+    assign uio_out = 8'd0;
+    assign uio_oe  = 8'd0;
 
     wire pixel_valid = ui_in[0];
     wire [7:0] pixel_in = uio_in;
@@ -20,24 +20,24 @@ module tt_um_edge_detect (
     reg [7:0] out;
     assign uo_out = out;
 
-    // -----------------------------
-    // 16x16 CONTROL (ONLY COUNTERS)
-    // -----------------------------
-    reg [3:0] row;
-    reg [3:0] col;
+    // =====================================================
+    // 64x64 COUNTERS
+    // =====================================================
+    reg [5:0] row;
+    reg [5:0] col;
 
-    // -----------------------------
-    // 3x3 WINDOW (NO ARRAYS!)
-    // -----------------------------
+    // =====================================================
+    // 3x3 SHIFT WINDOW (NO ARRAYS!)
+    // =====================================================
     reg [7:0] r0_0, r0_1, r0_2;
     reg [7:0] r1_0, r1_1, r1_2;
     reg [7:0] r2_0, r2_1, r2_2;
 
     reg [7:0] prev1, prev2;
 
-    // -----------------------------
-    // SOBEL (lightweight)
-    // -----------------------------
+    // =====================================================
+    // SOBEL COMPUTATION
+    // =====================================================
     wire signed [10:0] gx =
         -$signed(r0_0) + $signed(r0_2)
         -($signed(r1_0) <<< 1) + ($signed(r1_2) <<< 1)
@@ -51,8 +51,11 @@ module tt_um_edge_detect (
     wire [10:0] ay = gy[10] ? -gy : gy;
     wire [11:0] mag = ax + ay;
 
-    wire valid = (row >= 2 && col >= 2);
+    wire valid_window = (row >= 2 && col >= 2);
 
+    // =====================================================
+    // MAIN PIPELINE
+    // =====================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             row <= 0;
@@ -67,9 +70,9 @@ module tt_um_edge_detect (
             prev2 <= 0;
         end else if (pixel_valid) begin
 
-            // -----------------------------
-            // SHIFT WINDOW UPDATE
-            // -----------------------------
+            // =================================================
+            // SHIFT REGISTER UPDATE (NO MEMORY ARRAY)
+            // =================================================
             r0_0 <= r0_1;
             r0_1 <= r0_2;
             r0_2 <= pixel_in;
@@ -85,12 +88,12 @@ module tt_um_edge_detect (
             prev2 <= prev1;
             prev1 <= pixel_in;
 
-            // -----------------------------
-            // 16x16 COUNTER LOGIC
-            // -----------------------------
-            if (col == 15) begin
+            // =================================================
+            // 64x64 COUNTER LOGIC
+            // =================================================
+            if (col == 6'd63) begin
                 col <= 0;
-                if (row == 15)
+                if (row == 6'd63)
                     row <= 0;
                 else
                     row <= row + 1;
@@ -98,10 +101,10 @@ module tt_um_edge_detect (
                 col <= col + 1;
             end
 
-            // -----------------------------
-            // OUTPUT
-            // -----------------------------
-            if (valid) begin
+            // =================================================
+            // OUTPUT LOGIC
+            // =================================================
+            if (valid_window) begin
                 if (mag > 255)
                     out <= 8'hFF;
                 else
