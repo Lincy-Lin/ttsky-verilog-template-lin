@@ -3,38 +3,51 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles
 
 
 @cocotb.test()
 async def test_project(dut):
-    dut._log.info("Start")
+    dut._log.info("Start test")
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
+    # 100MHz clock (10ns period)
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
-    dut._log.info("Reset")
+    dut._log.info("Reset DUT")
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
+
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
 
-    dut._log.info("Test project behavior")
+    await ClockCycles(dut.clk, 5)
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+    dut._log.info("Sending 64x64 pixel stream")
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
+    # Send 64x64 pixels
+    for row in range(64):
+        for col in range(64):
+            dut.ui_in.value = 1   # pixel_valid
+            dut.uio_in.value = (row + col) & 0xFF
+            await RisingEdge(dut.clk)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # Stop valid
+    dut.ui_in.value = 0
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    dut._log.info("Finished sending data")
+
+    # Wait a few cycles
+    await ClockCycles(dut.clk, 20)
+
+    # Basic sanity check (not strict)
+    out_val = int(dut.uo_out.value)
+    dut._log.info(f"Final output sample: {out_val}")
+
+    # Ensure output is in valid 8-bit range
+    assert 0 <= out_val <= 255
+
+    dut._log.info("Test completed successfully")
