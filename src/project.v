@@ -21,19 +21,23 @@ module tt_um_edge_detect (
     assign uo_out = out;
 
     // -----------------------------
-    // 3×3 SHIFT WINDOW (NO ARRAY!)
+    // 16x16 CONTROL (ONLY COUNTERS)
     // -----------------------------
+    reg [3:0] row;
+    reg [3:0] col;
 
+    // -----------------------------
+    // 3x3 WINDOW (NO ARRAYS!)
+    // -----------------------------
     reg [7:0] r0_0, r0_1, r0_2;
     reg [7:0] r1_0, r1_1, r1_2;
     reg [7:0] r2_0, r2_1, r2_2;
 
     reg [7:0] prev1, prev2;
 
-    // simple counters (small!)
-    reg [3:0] col;
-
-    // Sobel
+    // -----------------------------
+    // SOBEL (lightweight)
+    // -----------------------------
     wire signed [10:0] gx =
         -$signed(r0_0) + $signed(r0_2)
         -($signed(r1_0) <<< 1) + ($signed(r1_2) <<< 1)
@@ -47,10 +51,11 @@ module tt_um_edge_detect (
     wire [10:0] ay = gy[10] ? -gy : gy;
     wire [11:0] mag = ax + ay;
 
-    wire valid_window = (col >= 2);
+    wire valid = (row >= 2 && col >= 2);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
+            row <= 0;
             col <= 0;
             out <= 0;
 
@@ -65,7 +70,6 @@ module tt_um_edge_detect (
             // -----------------------------
             // SHIFT WINDOW UPDATE
             // -----------------------------
-
             r0_0 <= r0_1;
             r0_1 <= r0_2;
             r0_2 <= pixel_in;
@@ -82,15 +86,22 @@ module tt_um_edge_detect (
             prev1 <= pixel_in;
 
             // -----------------------------
-            // COLUMN COUNTER
+            // 16x16 COUNTER LOGIC
             // -----------------------------
-            if (col < 7)
+            if (col == 15) begin
+                col <= 0;
+                if (row == 15)
+                    row <= 0;
+                else
+                    row <= row + 1;
+            end else begin
                 col <= col + 1;
+            end
 
             // -----------------------------
             // OUTPUT
             // -----------------------------
-            if (valid_window) begin
+            if (valid) begin
                 if (mag > 255)
                     out <= 8'hFF;
                 else
@@ -98,6 +109,7 @@ module tt_um_edge_detect (
             end else begin
                 out <= 0;
             end
+
         end
     end
 
